@@ -1,0 +1,14 @@
+torch
+torchvision
+numpy
+pandas
+scikit-learn
+matplotlib
+seaborn
+tqdm
+pyyaml
+torch-pruning
+thop
+dpkt
+py7zr
+Pillow
