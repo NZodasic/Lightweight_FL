@@ -1,5 +1,5 @@
 The project format should follow:
-
+```
 project/
 │
 ├── configs/
@@ -20,3 +20,4 @@ project/
 ├── experiment.sh           # Convenience script to run the full pipeline
 ├── requirements.txt
 └── EXPERIMENT/             # Auto-created run folders (logs, models, plots, …)
+```
