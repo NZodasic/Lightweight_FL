@@ -1,0 +1,27 @@
+dataset:
+  name: "USTC-TFC2016"
+  archive_path: "archive.zip"
+  data_dir: "data/USTC-TFC2016"
+  img_size: 32           # e.g., 32x32 = 1024 bytes
+  batch_size: 64
+  num_workers: 4
+
+federated:
+  num_clients: 10
+  fraction_fit: 1.0      # fraction of clients to sample per round
+  num_rounds: 5
+  local_epochs: 3
+  partition: "iid"       # "iid" or "noniid"
+  dirichlet_alpha: 0.5
+
+pruning:
+  sparsity: 0.5          # 0.0 to 1.0
+
+training:
+  model_name: "resnet50"
+  learning_rate: 0.01
+  momentum: 0.9
+  weight_decay: 0.0001
+  device: "cuda"
+
+seed: 42
