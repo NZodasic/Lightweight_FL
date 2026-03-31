@@ -6,3 +6,5 @@ data/road_multi_label.csv
 /utils/__pycache__
 /training/__pycache__
 /utils/__pycache__
+/training/__pycache__
+/__pycache__

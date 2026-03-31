@@ -1,3 +1,4 @@
+import argparse
 import os
 import yaml
 import torch
@@ -14,8 +15,14 @@ from utils.logger import FL_Logger
 from utils.viz import plot_training_curves
 
 def main():
+    parser = argparse.ArgumentParser(description="Run Federated Learning with Saliency Learning XAI Module")
+    parser.add_argument('--use_xai', action='store_true', help="Enable Saliency Learning")
+    args = parser.parse_args()
+
     with open("configs/config.yaml", 'r') as f:
         config = yaml.safe_load(f)
+        
+    config['training']['use_xai'] = args.use_xai
         
     set_seed(config['seed'])
     device = get_device()
@@ -106,7 +113,7 @@ def main():
     
     # 3. Federated Learning Setup
     server = FLServer(global_model, config, device, masks)
-    clients = [FLClient(i, cl, device) for i, cl in enumerate(client_loaders)]
+    clients = [FLClient(i, cl, device, config=config) for i, cl in enumerate(client_loaders)]
     
     # 4. Training Loop
     logger.info("Starting Federated Training...")

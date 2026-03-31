@@ -5,16 +5,23 @@ import torch.optim as optim
 from pruning.baseline import apply_mask, apply_mask_to_gradients
 
 class FLClient:
-    def __init__(self, client_id, dataloader, device):
+    def __init__(self, client_id, dataloader, device, config=None):
         self.id = client_id
         self.dataloader = dataloader
         self.device = device
+        self.config = config
         
     def train(self, global_model, masks, epochs, lr, momentum, weight_decay):
         model = copy.deepcopy(global_model).to(self.device)
         model.train()
         
-        criterion = nn.CrossEntropyLoss()
+        use_xai = self.config['training'].get('use_xai', False) if self.config else False
+        
+        if use_xai:
+            from xai_module import SaliencyLearningLoss
+            criterion = SaliencyLearningLoss(lambda_saliency=1.0)
+        else:
+            criterion = nn.CrossEntropyLoss()
         optimizer = optim.SGD(model.parameters(), lr=lr, momentum=momentum, weight_decay=weight_decay)
         
         # Apply mask initially
@@ -25,8 +32,14 @@ class FLClient:
             for data, target in self.dataloader:
                 data, target = data.to(self.device), target.to(self.device)
                 optimizer.zero_grad()
-                output = model(data)
-                loss = criterion(output, target)
+                
+                if use_xai:
+                    expert_mask = torch.zeros_like(data).to(self.device)
+                    loss = criterion(model, data, target, expert_mask)
+                else:
+                    output = model(data)
+                    loss = criterion(output, target)
+                    
                 loss.backward()
                 
                 # Apply mask to gradient strictly before step to ensure masked weights stay 0
