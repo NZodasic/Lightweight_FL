@@ -1,126 +1,96 @@
 import os
-import zipfile
+import pandas as pd
 import numpy as np
 import torch
 from torch.utils.data import Dataset, DataLoader
-from utils.system import set_seed
 
-class PcapImageDataset(Dataset):
+class CANTabularDataset(Dataset):
     """
-    Reads PCAP files directly from a zip archive, chunks them into 
-    fixed sizes to simulate 32x32 images (1024 bytes).
+    Reads tabular CAN data from a Parquet file.
+    Extracts ID and DATA0-7, normalizes them, and returns (features, label).
     """
-    def __init__(self, zip_path, img_size=32, transform=None, max_samples_per_class=5000):
-        self.zip_path = zip_path
-        self.img_size = img_size
-        self.transform = transform
-        self.max_samples = max_samples_per_class
+    def __init__(self, data_path_or_df, max_samples=None):
+        if isinstance(data_path_or_df, str):
+            self.data_path = data_path_or_df
+            df = pd.read_parquet(self.data_path)
+        else:
+            self.data_path = "DataFrame"
+            df = data_path_or_df
+            
+        if max_samples is not None and max_samples < len(df):
+            df = df.sample(n=max_samples, random_state=42)
+            
+        feature_cols = ['ID', 'DATA0', 'DATA1', 'DATA2', 'DATA3', 'DATA4', 'DATA5', 'DATA6', 'DATA7']
         
-        self.data = []
-        self.labels = []
+        # Verify columns exist
+        for col in feature_cols:
+            if col not in df.columns:
+                raise ValueError(f"Missing expected column: {col}")
+                
+        X = df[feature_cols].values.astype(np.float32)
         
-        # Load from zip
-        with zipfile.ZipFile(self.zip_path, 'r') as z:
-            benign_files = [f for f in z.namelist() if f.startswith('Benign/') and f.endswith('.pcap')]
-            malware_files = [f for f in z.namelist() if f.startswith('Malware/') and f.endswith('.pcap')]
+        # Normalization
+        # ID max normalization (to avoid massive values skewing the network)
+        max_id = np.max(X[:, 0]) if len(X) > 0 else 1.0
+        if max_id == 0: max_id = 1.0
+        X[:, 0] = X[:, 0] / max_id
+        
+        # DATA0-7 are bytes (0-255)
+        X[:, 1:] = X[:, 1:] / 255.0
+        
+        self.data = X
+        
+        # Binary classification mapping
+        # Label 0 is benign, > 0 is malicious
+        if 'label' in df.columns:
+            y = df['label'].values
+            self.labels = (y > 0).astype(np.int64)
+        else:
+            self.labels = np.zeros(len(X), dtype=np.int64)
             
-            # Load Benign (Label 0)
-            self._process_files(z, benign_files, label=0, target_count=max_samples_per_class)
-            
-            # Load Malware (Label 1)
-            self._process_files(z, malware_files, label=1, target_count=max_samples_per_class)
-            
-        self.data = np.array(self.data, dtype=np.float32) / 255.0  # normalize
-        self.labels = np.array(self.labels, dtype=np.int64)
-
-    def _process_files(self, z, file_list, label, target_count):
-        chunk_size = self.img_size * self.img_size
-        count = 0
-        for fname in file_list:
-            if count >= target_count:
-                break
-            with z.open(fname, 'r') as f:
-                content = f.read()
-                # Skip global pcap header (24 bytes)
-                content = content[24:]
-                # Chunk data
-                for i in range(0, len(content) - chunk_size, chunk_size):
-                    chunk = np.frombuffer(content[i:i+chunk_size], dtype=np.uint8)
-                    if len(chunk) == chunk_size:
-                        # ResNet 50 expects 3 channels usually. We tile 1 channel 3 times
-                        img = chunk.reshape(1, self.img_size, self.img_size)
-                        img = np.repeat(img, 3, axis=0) # Shape: (3, 32, 32)
-                        self.data.append(img)
-                        self.labels.append(label)
-                        count += 1
-                    if count >= target_count:
-                        break
-
     def __len__(self):
         return len(self.labels)
 
     def __getitem__(self, idx):
         x = torch.tensor(self.data[idx], dtype=torch.float32)
         y = torch.tensor(self.labels[idx], dtype=torch.long)
-        if self.transform:
-            x = self.transform(x)
         return x, y
 
-
-def get_dataset(zip_path, img_size=32, max_samples=5000):
-    """Returns the full parsed dataset."""
-    print("Loading dataset...", flush=True)
-    dataset = PcapImageDataset(zip_path, img_size=img_size, max_samples_per_class=max_samples)
+def get_dataset(data_path, img_size=None, max_samples=None):
+    """Returns the full parsed dataset using the tabular structure."""
+    print(f"Loading dataset from {data_path}...", flush=True)
+    dataset = CANTabularDataset(data_path, max_samples=max_samples)
     print(f"Dataset loaded. Total samples: {len(dataset)}, Classes: 2 (Benign, Malicious)", flush=True)
     return dataset
 
-
-def partition_data(dataset, num_clients, partition_type="iid", dirichlet_alpha=0.5):
+def get_prepartitioned_client_datasets(concept_parquet_path):
     """
-    Partitions the dataset among clients.
-    partition_type: 'iid' or 'noniid'
-    returns: List of Subsets or DataLoaders
+    Loads a pre-partitioned concept parquet file.
+    Returns a dictionary of Datasets grouped by 'client_id'.
     """
-    num_items = int(len(dataset) / num_clients)
-    client_datasets = {}
+    df = pd.read_parquet(concept_parquet_path)
     
-    if partition_type == "iid":
-        all_idxs = np.random.permutation(len(dataset))
-        for i in range(num_clients):
-            client_datasets[i] = all_idxs[i * num_items : (i + 1) * num_items]
-            
-    elif partition_type == "noniid":
-        # Dirichlet distribution for non-IID
-        min_size = 0
-        min_require_size = 10
-        N = len(dataset)
-        labels = dataset.labels
+    if 'client_id' not in df.columns:
+        raise ValueError("Missing 'client_id' column in the partition parquet file.")
         
-        while min_size < min_require_size:
-            idx_batch = [[] for _ in range(num_clients)]
-            for k in range(2): # 2 classes
-                idx_k = np.where(labels == k)[0]
-                np.random.shuffle(idx_k)
-                proportions = np.random.dirichlet(np.repeat(dirichlet_alpha, num_clients))
-                
-                # Balance
-                proportions = np.array([p * (len(idx_j) < N / num_clients) for p, idx_j in zip(proportions, idx_batch)])
-                proportions = proportions / proportions.sum()
-                proportions = (np.cumsum(proportions) * len(idx_k)).astype(int)[:-1]
-                idx_batch = [idx_j + idx.tolist() for idx_j, idx in zip(idx_batch, np.split(idx_k, proportions))]
-                min_size = min([len(idx_j) for idx_j in idx_batch])
-                
-        for i in range(num_clients):
-            client_datasets[i] = idx_batch[i]
-            np.random.shuffle(client_datasets[i])
-            
-    return client_datasets
+    client_ids = df['client_id'].unique()
+    num_clients = len(client_ids)
+    
+    print(f"Loaded concept file with {num_clients} clients.", flush=True)
+    
+    client_datasets = {}
+    for cid in np.sort(client_ids):
+        client_df = df[df['client_id'] == cid].copy()
+        client_datasets[cid] = CANTabularDataset(client_df)
+        
+    return client_datasets, num_clients
 
-def get_dataloaders(dataset, client_datasets, batch_size=64):
-    """Converts partitioned indices into DataLoaders."""
+def get_dataloaders(client_datasets_dict, batch_size=64):
+    """Converts a dictionary of Datasets into DataLoaders."""
     dataloaders = []
-    for i in range(len(client_datasets)):
-        subset = torch.utils.data.Subset(dataset, client_datasets[i])
-        dl = DataLoader(subset, batch_size=batch_size, shuffle=True, drop_last=True)
+    # Ensure ordered by client ID matches 0, ..., N-1
+    sorted_cids = sorted(client_datasets_dict.keys())
+    for cid in sorted_cids:
+        dl = DataLoader(client_datasets_dict[cid], batch_size=batch_size, shuffle=True, drop_last=True)
         dataloaders.append(dl)
     return dataloaders

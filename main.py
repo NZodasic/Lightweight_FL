@@ -2,8 +2,9 @@ import os
 import yaml
 import torch
 import random
-from data.data_loader import get_dataset, partition_data, get_dataloaders
+from data.data_loader import get_dataset, get_prepartitioned_client_datasets, get_dataloaders
 from models.resnet50 import get_resnet50
+from models.mlp import get_mlp
 from models.model_utils import compute_model_complexity
 from pruning.baseline import compute_structured_mask, calculate_sparsity
 from training.trainer import FLServer, FLClient
@@ -23,23 +24,31 @@ def main():
     logger = FL_Logger(log_dir="EXPERIMENT")
     
     # 1. Dataset Loading
-    dataset = get_dataset(config['dataset']['archive_path'], img_size=config['dataset']['img_size'])
-    total_samples = len(dataset)
+    # Use prepartitioned train and test files
+    train_path = os.path.join(config['dataset']['archive_path'], "train.parquet")
+    test_path = os.path.join(config['dataset']['archive_path'], "test.parquet")
     
-    # Simple 80/20 train/test split for global evaluation
-    test_size = int(0.2 * total_samples)
-    train_size = total_samples - test_size
-    train_dataset, test_dataset = torch.utils.data.random_split(dataset, [train_size, test_size])
+    concept_name = config['federated'].get('concept', 'concept_1')
+    concept_path = os.path.join(config['dataset']['archive_path'], f"{concept_name}.parquet")
+    
+    logger.info(f"Loading global train dataset: {train_path}")
+    train_dataset = get_dataset(train_path)
+    logger.info(f"Loading global test dataset: {test_path}")
+    test_dataset = get_dataset(test_path)
+    
+    total_samples = len(train_dataset) + len(test_dataset)
+    train_size = len(train_dataset)
+    test_size = len(test_dataset)
     
     test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
     
-    # Partition Training data for FL Clients
-    client_datasets = partition_data(train_dataset, 
-                                     num_clients=config['federated']['num_clients'],
-                                     partition_type=config['federated']['partition'],
-                                     dirichlet_alpha=config['federated']['dirichlet_alpha'])
+    # Load Concept 1 directly
+    logger.info(f"Loading pre-partitioned client data: {concept_path}")
+    client_datasets, num_clients_actual = get_prepartitioned_client_datasets(concept_path)
     
-    client_loaders = get_dataloaders(train_dataset, client_datasets, batch_size=batch_size)
+    config['federated']['num_clients'] = num_clients_actual
+    
+    client_loaders = get_dataloaders(client_datasets, batch_size=batch_size)
     samples_per_client = int(train_size / config['federated']['num_clients'])
     
     # ==========================
@@ -57,8 +66,14 @@ def main():
     logger.info("---")
     
     # 2. Model Initialization & Pruning
-    global_model = get_resnet50(num_classes=2)
-    complexity_before = compute_model_complexity(global_model, device=device)
+    if config['training']['model_name'].lower() == 'mlp':
+        global_model = get_mlp(input_dim=config['dataset']['img_size'], num_classes=2)
+        dummy_input_size = (1, config['dataset']['img_size'])
+    else:
+        global_model = get_resnet50(num_classes=2)
+        dummy_input_size = (1, 3, config['dataset']['img_size'], config['dataset']['img_size'])
+        
+    complexity_before = compute_model_complexity(global_model, input_size=dummy_input_size, device=device)
     
     masks = compute_structured_mask(global_model, config['pruning']['sparsity'])
     actual_sparsity = calculate_sparsity(global_model, masks)

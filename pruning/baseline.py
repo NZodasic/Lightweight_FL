@@ -9,14 +9,18 @@ def compute_structured_mask(model, sparsity):
         
     masks = {}
     for name, module in model.named_modules():
-        if isinstance(module, torch.nn.Conv2d):
+        if isinstance(module, (torch.nn.Conv2d, torch.nn.Linear)):
             weight = module.weight.data
             
-            # Compute L1 norm of each filter (out_channels)
-            # shape: (out_channels, in_channels, kH, kW)
-            filter_norms = torch.sum(torch.abs(weight), dim=(1, 2, 3))
-            
-            # Number of filters to prune
+            if isinstance(module, torch.nn.Conv2d):
+                # Compute L1 norm of each filter (out_channels)
+                # shape: (out_channels, in_channels, kH, kW)
+                filter_norms = torch.sum(torch.abs(weight), dim=(1, 2, 3))
+            elif isinstance(module, torch.nn.Linear):
+                # shape: (out_features, in_features)
+                filter_norms = torch.sum(torch.abs(weight), dim=1)
+                
+            # Number of filters/neurons to prune
             k = int(len(filter_norms) * sparsity)
             if k == 0:
                 masks[name + '.weight'] = torch.ones_like(weight)
@@ -32,7 +36,11 @@ def compute_structured_mask(model, sparsity):
             if mask_1d.sum() == 0:
                 mask_1d[torch.argmax(filter_norms)] = 1.0
                 
-            mask = mask_1d.view(-1, 1, 1, 1).expand_as(weight)
+            if isinstance(module, torch.nn.Conv2d):
+                mask = mask_1d.view(-1, 1, 1, 1).expand_as(weight)
+            elif isinstance(module, torch.nn.Linear):
+                mask = mask_1d.view(-1, 1).expand_as(weight)
+                
             masks[name + '.weight'] = mask
             
     return masks

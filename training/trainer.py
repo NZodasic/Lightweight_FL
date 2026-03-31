@@ -2,7 +2,6 @@ import copy
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from data.data_loader import partition_data, get_dataloaders
 from pruning.baseline import apply_mask, apply_mask_to_gradients
 
 class FLClient:

@@ -1,13 +1,14 @@
 dataset:
-  name: "USTC-TFC2016"
-  archive_path: "archive.zip"
-  data_dir: "data/USTC-TFC2016"
-  img_size: 32           # e.g., 32x32 = 1024 bytes
+  name: "ROAD-CAN"
+  archive_path: "Dataset"
+  data_dir: "Dataset"
+  img_size: 9            # Input dimension (ID, DATA0...DATA7)
   batch_size: 64
   num_workers: 4
 
 federated:
-  num_clients: 10
+  concept: "concept_1"   # The partitioned parquet to load (e.g., concept_1, concept_2, concept_3)
+  num_clients: 10        # Note: This is overridden automatically by the concept file!
   fraction_fit: 1.0      # fraction of clients to sample per round
   num_rounds: 5
   local_epochs: 3
@@ -18,7 +19,7 @@ pruning:
   sparsity: 0.5          # 0.0 to 1.0
 
 training:
-  model_name: "resnet50"
+  model_name: "mlp"
   learning_rate: 0.01
   momentum: 0.9
   weight_decay: 0.0001
