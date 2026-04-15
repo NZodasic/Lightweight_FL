@@ -24,10 +24,10 @@ class SaliencyLearningLoss(nn.Module):
         # Forward pass
         logits = model(x)
 
-        # Bug 4 fix: Detach logits cho base_loss để tránh second-order gradient không cần thiết
-        # qua CE loss khi loss.backward() được gọi (tiết kiệm memory và tránh instability).
-        # Score (để tính gradient saliency) vẫn dùng logits đầy đủ với create_graph=True.
-        base_loss = self.base_criterion(logits.detach(), targets)
+        # base_loss và saliency_penalty chia sẻ cùng computation graph — đây là cách
+        # Ross et al. implement. KHÔNG detach logits vì sẽ cắt gradient của CE loss
+        # khỏi model weights, khiến CrossEntropy không có tác dụng training.
+        base_loss = self.base_criterion(logits, targets)
 
         # Tính Gradient để dùng làm Saliency Map.
         # Dùng ground truth index kết hợp với gradient của log_softmax thay thế cho raw logits (Theo Ross et al.)
