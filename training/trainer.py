@@ -19,7 +19,8 @@ class FLClient:
         
         if use_xai:
             from xai_module import SaliencyLearningLoss
-            criterion = SaliencyLearningLoss(lambda_saliency=1.0)
+            lambda_sal = self.config['training'].get('lambda_saliency', 1.0)
+            criterion = SaliencyLearningLoss(lambda_saliency=lambda_sal)
         else:
             criterion = nn.CrossEntropyLoss()
         optimizer = optim.SGD(model.parameters(), lr=lr, momentum=momentum, weight_decay=weight_decay)
@@ -34,7 +35,11 @@ class FLClient:
                 optimizer.zero_grad()
                 
                 if use_xai:
-                    expert_mask = torch.zeros_like(data).to(self.device)
+                    # Domain mask cho ROAD CAN dataset:
+                    # - Col 0 (ID): mask=0 → model được phép dùng tự do
+                    # - Col 1-8 (DATA0-DATA7): mask=1 → penalize nếu model phụ thuộc vào payload bytes
+                    expert_mask = torch.ones_like(data, device=self.device)
+                    expert_mask[:, 0] = 0.0  # ID feature — không phạt
                     loss = criterion(model, data, target, expert_mask)
                 else:
                     output = model(data)

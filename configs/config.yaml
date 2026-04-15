@@ -24,5 +24,6 @@ training:
   momentum: 0.9
   weight_decay: 0.0001
   device: "cuda"
+  lambda_saliency: 1.0   # Weight for saliency penalty. Ross et al. use ~1000 for some experiments.
 
 seed: 42
