@@ -3,30 +3,42 @@ import torch.nn as nn
 import torch.autograd as autograd
 
 class DimSeqMaxPoolCNN(nn.Module):
-    def __init__(self, input_channels, num_classes):
+    def __init__(self, input_channels, num_classes, seq_length=9):
         super(DimSeqMaxPoolCNN, self).__init__()
-        # Mạng CNN cơ sở
-        self.cnn = nn.Sequential(
+        # Mạng CNN cơ sở (Parallel CNNs theo Ghaeini et al.)
+        self.cnn_3 = nn.Sequential(
             nn.Conv1d(input_channels, 64, kernel_size=3, padding=1),
             nn.ReLU()
         )
-        self.classifier = nn.Linear(64, num_classes)
+        self.cnn_5 = nn.Sequential(
+            nn.Conv1d(input_channels, 64, kernel_size=5, padding=2),
+            nn.ReLU()
+        )
+        
+        # Trọng số tuyến tính sẽ nhận đầu vào được biểu diễn từ cả hai nhánh, 
+        # bao gồm cả sequence-wise (64) và dimension-wise (seq_length) cho từng nhánh CNN
+        self.classifier = nn.Linear(128 + 2 * seq_length, num_classes)
 
     def forward(self, x):
         """
         x shape: (batch_size, channels, sequence_length)
         """
-        features = self.cnn(x)
+        features_3 = self.cnn_3(x)
+        features_5 = self.cnn_5(x)
         
-        # Sequence-wise Max-Pooling (Max pool dọc theo chuỗi thời gian/chiều dài)
-        # Lấy đặc trưng nổi bật nhất của mỗi channel xuyên suốt thời gian
-        seq_pooled, _ = torch.max(features, dim=2) # Shape: (batch_size, channels)
+        # Sequence-wise Max-Pooling (Max pool dọc theo chuỗi thời gian/chiều dài, dim=2) -> Shape: (batch_size, channels)
+        seq_pooled_3, _ = torch.max(features_3, dim=2)
+        seq_pooled_5, _ = torch.max(features_5, dim=2)
         
-        # (Optional) Dimension-wise logic: Đôi khi được áp dụng để lấy đặc trưng chéo kênh
-        # dim_pooled, _ = torch.max(seq_pooled, dim=1) 
+        # Dimension-wise Max-Pooling (Max pool dọc theo không gian kênh, dim=1) -> Shape: (batch_size, sequence_length)
+        dim_pooled_3, _ = torch.max(features_3, dim=1)
+        dim_pooled_5, _ = torch.max(features_5, dim=1)
+
+        # Ghép tất cả các biểu diễn lại với nhau
+        concat_features = torch.cat([seq_pooled_3, dim_pooled_3, seq_pooled_5, dim_pooled_5], dim=1)
 
         # Đưa vào Full Connected để ra dự đoán cuối cùng
-        out = self.classifier(seq_pooled)
+        out = self.classifier(concat_features)
         return out
 
 class SaliencyLearningLoss(nn.Module):
@@ -39,19 +51,22 @@ class SaliencyLearningLoss(nn.Module):
         """
         x: Dữ liệu đầu vào
         targets: Nhãn thực tế
-        expert_mask: Ma trận nhị phân (1 = đặc trưng chuyên gia đánh giá là KHÔNG QUAN TRỌNG cần phạt, 
-                                      0 = được phép học)
+        expert_mask: Ma trận nhị phân (Được cung cấp bởi chuyên gia miền hiểu biết/Domain expert)
+                     1 = đặc trưng chuyên gia đánh giá là KHÔNG QUAN TRỌNG cần phạt, 
+                     0 = được phép học.
+                     Ma trận này KHÔNG được hệ thống học mà phải truyền vào như tri thức bên ngoài.
         """
-        # Yêu cầu theo dõi gradient cho x để tính Saliency Maps
-        x.requires_grad_(True)
+        # Tránh lỗi in-place mutation, detach x ra khỏi đồ thị và yệu cầu track gradient cho x
+        x = x.detach().requires_grad_(True)
         
         # Forward pass
         logits = model(x)
         base_loss = self.base_criterion(logits, targets)
         
-        # Tính Gradient của đầu ra đối với đầu vào (đóng vai trò là Saliency Map)
-        # Dùng ground truth index để tính gradient
-        score = logits.gather(1, targets.view(-1, 1)).sum()
+        # Tính Gradient để dùng làm Saliency Map. 
+        # Dùng ground truth index kết hợp với gradient của log_softmax thay thế cho raw logits (Theo Ross et al.)
+        log_probs = torch.log_softmax(logits, dim=1)
+        score = log_probs.gather(1, targets.view(-1, 1)).sum()
         
         gradients = autograd.grad(outputs=score, inputs=x, 
                                   create_graph=True, retain_graph=True, 
